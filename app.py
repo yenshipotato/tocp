@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 
 from flask import Flask, jsonify, request, abort, send_file
 from dotenv import load_dotenv
@@ -13,7 +14,7 @@ from utils import send_text_message
 load_dotenv()
 
 machine = TocMachine(
-    states=["user", "state1", "state2"],
+    states=["user", "state1", "state2","draw"],
     transitions=[
         {
             "trigger": "advance",
@@ -27,12 +28,19 @@ machine = TocMachine(
             "dest": "state2",
             "conditions": "is_going_to_state2",
         },
-        {"trigger": "go_back", "source": ["state1", "state2"], "dest": "user"},
+        {
+            "trigger": "advance",
+            "source": "user",
+            "dest": "draw",
+            "conditions": "is_going_to_draw",
+        },
+        {"trigger": "go_back", "source": ["state1", "state2","draw"], "dest": "user"},
     ],
     initial="user",
     auto_transitions=False,
     show_conditions=True,
 )
+machines={}
 
 app = Flask(__name__, static_url_path="")
 
@@ -50,6 +58,14 @@ if channel_access_token is None:
 line_bot_api = LineBotApi(channel_access_token)
 parser = WebhookParser(channel_secret)
 
+def handleTrigger(state, events, user_id):
+    print("Server Handling State : %s" % state)
+    if state == "user":
+        machines[user_id].advance(events)
+
+@app.route('/callback', methods=['GET'])
+def reply():
+    return 'Hello, World!'
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -70,47 +86,31 @@ def callback():
             continue
         if not isinstance(event.message, TextMessage):
             continue
-
-        line_bot_api.reply_message(
-            event.reply_token, TextSendMessage(text=event.message.text)
-        )
-
-    return "OK"
-
-
-@app.route("/webhook", methods=["POST"])
-def webhook_handler():
-    signature = request.headers["X-Line-Signature"]
-    # get request body as text
-    body = request.get_data(as_text=True)
-    app.logger.info(f"Request body: {body}")
-
-    # parse webhook body
-    try:
-        events = parser.parse(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-
-    # if event is MessageEvent and message is TextMessage, then echo text
-    for event in events:
-        if not isinstance(event, MessageEvent):
-            continue
-        if not isinstance(event.message, TextMessage):
-            continue
-        if not isinstance(event.message.text, str):
-            continue
         print(f"\nFSM STATE: {machine.state}")
         print(f"REQUEST BODY: \n{body}")
-        response = machine.advance(event)
-        if response == False:
-            send_text_message(event.reply_token, "Not Entering any State")
+        res = json.loads(body)
+        print(type(res))
+        user_id=res["events"][0]["source"]["userId"]
+        if user_id not in machines:
+            machines[user_id] = TocMachine()
+        handleTrigger(machines[user_id].state, event, user_id)
 
     return "OK"
+    '''
+    webhook = json.loads(request.data.decode("utf-8"))
+    reply_token, user_id, message = webhook_parser(webhook)
+    print(reply_token, user_id, message)
+
+    
+
+    handleTrigger(machines[user_id].state, reply_token, user_id, message)
+    return jsonify({})'''
+
 
 
 @app.route("/show-fsm", methods=["GET"])
 def show_fsm():
-    machine.get_graph().draw("fsm.png", prog="dot", format="png")
+    TocMachine().get_graph().draw("fsm.png", prog="dot", format="png")
     return send_file("fsm.png", mimetype="image/png")
 
 
